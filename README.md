@@ -14,7 +14,13 @@ portamento glide so it feels like humming rather than jumping.
 ## Install
 
 ```bash
-uv sync
+uv sync --group dev
+```
+
+## Test
+
+```bash
+uv run pytest
 ```
 
 ## Run

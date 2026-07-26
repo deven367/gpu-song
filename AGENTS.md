@@ -18,6 +18,7 @@ Python CLI that hums a continuous musical drone pitched from Apple Silicon GPU u
 - After meaningful sessions, append a short entry under [Session learnings](#session-learnings)
 - Do not edit plan files the user attaches unless asked
 - Do not commit unless the user asks
+- Run tests with `uv run pytest` (dev group: `uv sync --group dev`)
 
 ## Session learnings
 
@@ -45,3 +46,9 @@ Python CLI that hums a continuous musical drone pitched from Apple Silicon GPU u
 - Mixed under the drone inside `DroneSynth` callback; carry one-shot tails across buffers carefully (mix carried voices before queueing new hits).
 - CLI: `--drums` / `--no-drums` (`BooleanOptionalAction`), `--drum-level`, plus a confirm prompt when unset on a TTY.
 - Status line shows current drum BPM when drums are on.
+
+### 2026-07-26 — pytest suite
+
+- Dev dep group: `pytest` via `[dependency-groups] dev` in `pyproject.toml`.
+- Tests live in `tests/`: `test_gpu.py` (powermetrics parse + mocked `sample_once`), `test_audio.py` (notes/scale/renderers), `test_drums.py`, `test_tracks.py`, `test_cli.py` (flags + mocked main loop).
+- Avoid real `powermetrics` / audio devices in unit tests — mock `subprocess.run`, `GPUSampler`, and `DroneSynth` at the CLI boundary.
