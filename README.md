@@ -41,14 +41,17 @@ sudo uv run python -m gpu_song
 | `--volume V` | `0.25` | Peak volume `0–1` |
 | `--glide MS` | `120` | Portamento time constant |
 | `--track NAME` | *(dropdown)* | Timbre: `hum`, `warm`, `buzz`, `pulse`, `glass` |
+| `--drums` / `--no-drums` | *(ask / on)* | Procedural kick/snare/hats under the drone |
+| `--drum-level V` | `0.55` | Drum mix level `0–1` |
 
 If `--track` is omitted and stdin is a TTY, an interactive dropdown asks which
-timbre to use. Non-interactive runs default to `hum`.
+timbre to use. A confirm prompt asks about drums unless `--drums` /
+`--no-drums` is set. Non-interactive runs default to `hum` + drums on.
 
 Example:
 
 ```bash
-sudo uv run gpu-song --track warm --root C3 --volume 0.2
+sudo uv run gpu-song --track warm --drums --drum-level 0.6
 ```
 
 Status line while running:
@@ -64,3 +67,4 @@ Ctrl+C stops cleanly.
 1. Background thread samples GPU HW active residency via `powermetrics`
 2. Usage percent maps onto a minor pentatonic spanning `--octaves` from `--root`
 3. A streaming drone glides toward that pitch; timbre comes from the selected track (`hum` / `warm` / `buzz` / `pulse` / `glass`)
+4. Optional procedural drums (kick / snare / hats) ride underneath — BPM and pattern density rise with GPU load

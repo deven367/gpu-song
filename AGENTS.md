@@ -38,3 +38,10 @@ Python CLI that hums a continuous musical drone pitched from Apple Silicon GPU u
 - Track timbres live in `gpu_song/tracks.py`; renderers in `audio.py` (`hum`, `warm`, `buzz`, `pulse`, `glass`). Keep callbacks vectorized; soft-clip additive waves with `tanh`.
 - Interactive track picker uses `questionary.select` (terminal dropdown). Skip it when `--track` is set or stdin is not a TTY (default `hum`).
 - Console entry remains `gpu_song.cli:entry`; no top-level `main.py`.
+
+### 2026-07-26 — procedural drums
+
+- Drums live in `gpu_song/drums.py` (`DrumMachine`): synthesized kick/snare/hat, 16-step patterns, BPM ~72–148 from GPU usage, denser kicks/hats when busy.
+- Mixed under the drone inside `DroneSynth` callback; carry one-shot tails across buffers carefully (mix carried voices before queueing new hits).
+- CLI: `--drums` / `--no-drums` (`BooleanOptionalAction`), `--drum-level`, plus a confirm prompt when unset on a TTY.
+- Status line shows current drum BPM when drums are on.

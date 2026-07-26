@@ -84,6 +84,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--drums",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="layer procedural drums under the drone (default: ask / on)",
+    )
+    parser.add_argument(
+        "--drum-level",
+        type=float,
+        default=0.55,
+        metavar="V",
+        help="drum mix level 0–1 (default: 0.55)",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -121,11 +134,30 @@ def choose_track(explicit: str | None) -> str:
     return selected
 
 
+def choose_drums(explicit: bool | None) -> bool:
+    """Resolve drums on/off from flag, prompt, or default-on."""
+    if explicit is not None:
+        return explicit
+    if not sys.stdin.isatty():
+        return True
+    answer = questionary.confirm(
+        "Add drums? (tempo rises with GPU load)",
+        default=True,
+        style=_DROPDOWN_STYLE,
+    ).ask()
+    if answer is None:
+        raise KeyboardInterrupt
+    return bool(answer)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     if not 0.0 < args.volume <= 1.0:
         print("error: --volume must be in (0, 1]", file=sys.stderr)
+        return 2
+    if not 0.0 <= args.drum_level <= 1.0:
+        print("error: --drum-level must be in [0, 1]", file=sys.stderr)
         return 2
     if args.interval < 100:
         print("error: --interval must be >= 100 ms", file=sys.stderr)
@@ -137,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         root_midi = parse_note(args.root)
         track_id = choose_track(args.track)
+        drums_on = choose_drums(args.drums)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -147,9 +180,16 @@ def main(argv: list[str] | None = None) -> int:
     preset = TRACK_BY_ID[track_id]
     mapper = UsageMapper(root_midi=root_midi, octaves=args.octaves)
     sampler = GPUSampler(interval_ms=args.interval)
-    synth = DroneSynth(volume=args.volume, glide_ms=args.glide, track=track_id)
+    synth = DroneSynth(
+        volume=args.volume,
+        glide_ms=args.glide,
+        track=track_id,
+        drums=drums_on,
+        drum_level=args.drum_level,
+    )
 
     print(f"Track: {preset.label} ({preset.id})")
+    print(f"Drums: {'on' if drums_on else 'off'}")
     print("gpu-song: sampling Apple Silicon GPU via powermetrics…")
     try:
         sampler.start()
@@ -171,9 +211,15 @@ def main(argv: list[str] | None = None) -> int:
             err = sampler.error
             _, note, hz = mapper.describe(usage)
             synth.set_usage(usage, hz)
-            status = (
-                f"\r[{preset.id}] GPU {usage:5.1f}% → {note} ({hz:6.1f} Hz)"
-            )
+            if drums_on:
+                status = (
+                    f"\r[{preset.id}] GPU {usage:5.1f}% → {note} "
+                    f"({hz:6.1f} Hz)  drums {synth.drum_bpm:5.1f} BPM"
+                )
+            else:
+                status = (
+                    f"\r[{preset.id}] GPU {usage:5.1f}% → {note} ({hz:6.1f} Hz)"
+                )
             if err:
                 status += f"  [{err}]"
             print(status, end="", flush=True)

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import sounddevice as sd
 
+from gpu_song.drums import DrumMachine
 from gpu_song.tracks import DEFAULT_TRACK, resolve_track
 
 # A minor pentatonic MIDI degrees relative to root: 1, b3, 4, 5, b7
@@ -155,6 +156,8 @@ class DroneSynth:
     glide_ms: float = 120.0
     blocksize: int = 1024
     track: str = DEFAULT_TRACK
+    drums: bool = True
+    drum_level: float = 0.55
 
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _target_hz: float = field(default=110.0, init=False)
@@ -163,20 +166,40 @@ class DroneSynth:
     _phase: float = field(default=0.0, init=False)
     _sample_index: int = field(default=0, init=False)
     _track_id: str = field(init=False)
+    _drums: DrumMachine = field(init=False)
     _stream: sd.OutputStream | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self._track_id = resolve_track(self.track).id
+        self._drums = DrumMachine(
+            sample_rate=self.sample_rate,
+            enabled=self.drums,
+            level=self.drum_level,
+        )
 
     def set_track(self, track_id: str) -> None:
         resolved = resolve_track(track_id)
         with self._lock:
             self._track_id = resolved.id
 
+    def set_drums(self, enabled: bool) -> None:
+        with self._lock:
+            self._drums.enabled = enabled
+
     @property
     def track_id(self) -> str:
         with self._lock:
             return self._track_id
+
+    @property
+    def drums_enabled(self) -> bool:
+        with self._lock:
+            return self._drums.enabled
+
+    @property
+    def drum_bpm(self) -> float:
+        with self._lock:
+            return self._drums.bpm
 
     def set_usage(self, usage_pct: float, target_hz: float) -> None:
         with self._lock:
@@ -224,6 +247,7 @@ class DroneSynth:
             phase = self._phase
             sample_index = self._sample_index
             track_id = self._track_id
+            drums = self._drums
 
         # Exponential approach toward target frequency each sample.
         # alpha ≈ 1 - exp(-dt / tau); tau = glide_ms.
@@ -245,8 +269,10 @@ class DroneSynth:
         renderer = _RENDERERS.get(track_id, _render_hum)
         wave = renderer(phases, t)
         # Gentle soft-clip so additive tracks stay tame.
-        samples = np.tanh(wave * 1.2).astype(np.float32) * np.float32(amp)
-        outdata[:, 0] = samples
+        drone = np.tanh(wave * 1.2) * amp
+        drum = drums.render(frames, usage)
+        mixed = np.tanh(drone + drum).astype(np.float32)
+        outdata[:, 0] = mixed
 
         with self._lock:
             self._current_hz = float(hz[-1])
