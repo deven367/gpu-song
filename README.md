@@ -25,7 +25,7 @@ uv sync
 sudo uv run gpu-song
 ```
 
-Or:
+Or as a module:
 
 ```bash
 sudo uv run python -m gpu_song

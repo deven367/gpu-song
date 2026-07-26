@@ -1,6 +1,6 @@
-"""Entry point for `python -m gpu_song` and the gpu-song script."""
+"""Entry point for `python -m gpu_song`."""
 
-from gpu_song.cli import main
+from gpu_song.cli import entry
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    entry()
