@@ -1,4 +1,4 @@
-"""Musical scale mapping and continuous sine drone synthesis."""
+"""Musical scale mapping and continuous drone synthesis."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import sounddevice as sd
+
+from gpu_song.tracks import DEFAULT_TRACK, resolve_track
 
 # A minor pentatonic MIDI degrees relative to root: 1, b3, 4, 5, b7
 _PENTATONIC_INTERVALS = (0, 3, 5, 7, 10)
@@ -95,22 +97,86 @@ class UsageMapper:
         return usage_pct, midi_to_name(midi), hz
 
 
+def _render_hum(phases: np.ndarray, _t: np.ndarray) -> np.ndarray:
+    return np.sin(phases)
+
+
+def _render_warm(phases: np.ndarray, _t: np.ndarray) -> np.ndarray:
+    # Second oscillator ~7 cents sharp via phase stretch (approx).
+    detune = 1.004
+    a = np.sin(phases)
+    b = np.sin(phases * detune)
+    return 0.55 * a + 0.45 * b
+
+
+def _render_buzz(phases: np.ndarray, _t: np.ndarray) -> np.ndarray:
+    # Soft saw: band-limited-ish additive series.
+    wave = np.zeros_like(phases)
+    for n in range(1, 9):
+        wave += np.sin(n * phases) / n
+    return wave * (2.0 / math.pi)
+
+
+def _render_pulse(phases: np.ndarray, _t: np.ndarray) -> np.ndarray:
+    # Soft square from odd harmonics.
+    wave = np.zeros_like(phases)
+    for k in range(4):
+        n = 2 * k + 1
+        wave += np.sin(n * phases) / n
+    return wave * (4.0 / math.pi) * 0.55
+
+
+def _render_glass(phases: np.ndarray, t: np.ndarray) -> np.ndarray:
+    shimmer = 1.0 + 0.08 * np.sin(2.0 * math.pi * 5.5 * t)
+    wave = (
+        0.7 * np.sin(phases)
+        + 0.22 * np.sin(3.0 * phases)
+        + 0.08 * np.sin(5.0 * phases)
+    )
+    return wave * shimmer
+
+
+_RENDERERS = {
+    "hum": _render_hum,
+    "warm": _render_warm,
+    "buzz": _render_buzz,
+    "pulse": _render_pulse,
+    "glass": _render_glass,
+}
+
+
 @dataclass
 class DroneSynth:
-    """Streaming sine drone with portamento and usage-linked volume."""
+    """Streaming drone with portamento, usage-linked volume, and track timbres."""
 
     sample_rate: int = 44100
     volume: float = 0.25
     volume_floor: float = 0.35  # fraction of volume at 0% usage
     glide_ms: float = 120.0
     blocksize: int = 1024
+    track: str = DEFAULT_TRACK
 
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _target_hz: float = field(default=110.0, init=False)
     _current_hz: float = field(default=110.0, init=False)
     _usage: float = field(default=0.0, init=False)
     _phase: float = field(default=0.0, init=False)
+    _sample_index: int = field(default=0, init=False)
+    _track_id: str = field(init=False)
     _stream: sd.OutputStream | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        self._track_id = resolve_track(self.track).id
+
+    def set_track(self, track_id: str) -> None:
+        resolved = resolve_track(track_id)
+        with self._lock:
+            self._track_id = resolved.id
+
+    @property
+    def track_id(self) -> str:
+        with self._lock:
+            return self._track_id
 
     def set_usage(self, usage_pct: float, target_hz: float) -> None:
         with self._lock:
@@ -156,6 +222,8 @@ class DroneSynth:
             current_hz = self._current_hz
             usage = self._usage
             phase = self._phase
+            sample_index = self._sample_index
+            track_id = self._track_id
 
         # Exponential approach toward target frequency each sample.
         # alpha ≈ 1 - exp(-dt / tau); tau = glide_ms.
@@ -172,9 +240,15 @@ class DroneSynth:
         hz = target_hz + (current_hz - target_hz) * (decay**steps)
         phase_inc = 2.0 * math.pi * hz / self.sample_rate
         phases = phase + np.cumsum(phase_inc)
-        samples = (np.sin(phases) * amp).astype(np.float32)
+        t = (sample_index + np.arange(frames, dtype=np.float64)) / self.sample_rate
+
+        renderer = _RENDERERS.get(track_id, _render_hum)
+        wave = renderer(phases, t)
+        # Gentle soft-clip so additive tracks stay tame.
+        samples = np.tanh(wave * 1.2).astype(np.float32) * np.float32(amp)
         outdata[:, 0] = samples
 
         with self._lock:
             self._current_hz = float(hz[-1])
             self._phase = float(phases[-1] % (2.0 * math.pi))
+            self._sample_index = sample_index + frames

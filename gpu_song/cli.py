@@ -6,12 +6,34 @@ import argparse
 import sys
 import time
 
+import questionary
+from questionary import Style
+
 from gpu_song import __version__
 from gpu_song.audio import DroneSynth, UsageMapper, parse_note
 from gpu_song.gpu import GPUSampleError, GPUSampler
+from gpu_song.tracks import (
+    DEFAULT_TRACK,
+    TRACK_BY_ID,
+    TRACKS,
+    resolve_track,
+    track_choices,
+)
+
+_DROPDOWN_STYLE = Style(
+    [
+        ("qmark", "fg:cyan bold"),
+        ("question", "bold"),
+        ("answer", "fg:cyan"),
+        ("pointer", "fg:cyan bold"),
+        ("highlighted", "fg:cyan bold"),
+        ("selected", "fg:cyan"),
+    ]
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
+    track_ids = ", ".join(t.id for t in TRACKS)
     parser = argparse.ArgumentParser(
         prog="gpu-song",
         description=(
@@ -52,11 +74,51 @@ def build_parser() -> argparse.ArgumentParser:
         help="portamento time constant in milliseconds (default: 120)",
     )
     parser.add_argument(
+        "--track",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help=(
+            f"track timbre ({track_ids}). "
+            "If omitted, shows an interactive dropdown when stdin is a TTY."
+        ),
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
     )
     return parser
+
+
+def choose_track(explicit: str | None) -> str:
+    """Resolve track from --track, interactive dropdown, or default."""
+    if explicit is not None:
+        return resolve_track(explicit).id
+
+    if not sys.stdin.isatty():
+        print(
+            f"gpu-song: no TTY for track dropdown; using default track "
+            f"{DEFAULT_TRACK!r}",
+            file=sys.stderr,
+        )
+        return DEFAULT_TRACK
+
+    choices = [
+        questionary.Choice(title=label, value=track_id)
+        for label, track_id in track_choices()
+    ]
+    selected = questionary.select(
+        "Select a track timbre:",
+        choices=choices,
+        default=DEFAULT_TRACK,
+        style=_DROPDOWN_STYLE,
+        use_shortcuts=True,
+    ).ask()
+
+    if selected is None:
+        raise KeyboardInterrupt
+    return selected
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -74,14 +136,20 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         root_midi = parse_note(args.root)
+        track_id = choose_track(args.track)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        return 130
 
+    preset = TRACK_BY_ID[track_id]
     mapper = UsageMapper(root_midi=root_midi, octaves=args.octaves)
     sampler = GPUSampler(interval_ms=args.interval)
-    synth = DroneSynth(volume=args.volume, glide_ms=args.glide)
+    synth = DroneSynth(volume=args.volume, glide_ms=args.glide, track=track_id)
 
+    print(f"Track: {preset.label} ({preset.id})")
     print("gpu-song: sampling Apple Silicon GPU via powermetrics…")
     try:
         sampler.start()
@@ -103,7 +171,9 @@ def main(argv: list[str] | None = None) -> int:
             err = sampler.error
             _, note, hz = mapper.describe(usage)
             synth.set_usage(usage, hz)
-            status = f"\rGPU {usage:5.1f}% → {note} ({hz:6.1f} Hz)"
+            status = (
+                f"\r[{preset.id}] GPU {usage:5.1f}% → {note} ({hz:6.1f} Hz)"
+            )
             if err:
                 status += f"  [{err}]"
             print(status, end="", flush=True)
