@@ -44,6 +44,16 @@ def test_main_rejects_bad_drum_level() -> None:
     assert main(["--drum-level", "2", "--track", "hum", "--no-drums"]) == 2
 
 
+def test_parser_smooth_flag() -> None:
+    args = build_parser().parse_args(["--smooth", "0"])
+    assert args.smooth == 0.0
+    assert build_parser().parse_args([]).smooth == pytest.approx(500.0)
+
+
+def test_main_rejects_negative_smooth() -> None:
+    assert main(["--smooth", "-1", "--track", "hum", "--no-drums"]) == 2
+
+
 def test_main_gpu_sample_error() -> None:
     fake_sampler = MagicMock()
     fake_sampler.start.side_effect = GPUSampleError("powermetrics requires root")
@@ -58,6 +68,7 @@ def test_main_runs_until_interrupt() -> None:
     fake_sampler.error = None
     fake_synth = MagicMock()
     fake_synth.drum_bpm = 96.0
+    fake_synth.current_usage = 12.5
 
     with (
         patch("gpu_song.cli.GPUSampler", return_value=fake_sampler),
