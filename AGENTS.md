@@ -8,61 +8,49 @@ Project guidance for AI agents working on **gpu-song**.
 
 Python CLI that hums a continuous musical drone pitched from Apple Silicon GPU usage.
 
-- Package: `gpu_song/`
-- Console script: `gpu-song` → `gpu_song.cli:entry` (defined in `pyproject.toml`)
-- No top-level `main.py` — invoke via `uv run gpu-song` or `python -m gpu_song`
+- Package: `gpu_song/`; console script `gpu-song` → `gpu_song.cli:entry` (raises `SystemExit` so exit codes work)
+- Invoke via `uv run gpu-song` or `python -m gpu_song`. **No top-level `main.py`** — it was removed on purpose; do not reintroduce it
+- Target: macOS on Apple Silicon (e.g. M2 Pro). There is no `nvidia-smi`; GPU usage comes from `powermetrics`
+- Sound: minor pentatonic (root `A2`, default span 2 octaves), portamento glide (~120 ms), volume soft-linked to usage with a floor
+
+## File map
+
+- `gpu.py` — `GPUSampler`: background thread polls `powermetrics --samplers gpu_power` every `--interval` ms; latest usage (0–100) kept under a lock
+- `audio.py` — `UsageMapper` (usage → scale frequency) and `DroneSynth` (streaming callback: portamento, usage-linked volume, usage smoothing, drum mix); renderers for the 5 timbres
+- `tracks.py` — frozen `TrackPreset` registry: `hum`, `warm`, `buzz`, `pulse`, `glass`
+- `drums.py` — `DrumMachine`: synthesized kick/snare/hat, 16-step patterns, BPM ~72–148 from usage, denser hits when busy
+- `cli.py` — argparse flags, `questionary` prompts (track dropdown, drums confirm; both skipped when non-TTY or explicit flag → defaults `hum` + drums on), main loop, status line (usage %, note, Hz, drum BPM)
+- `tests/` — `test_gpu.py`, `test_audio.py`, `test_drums.py`, `test_tracks.py`, `test_cli.py`
+
+## Invariants
+
+- The audio callback must stay vectorized (`numpy`) — a per-sample Python loop underruns easily with `sounddevice`. Soft-clip additive waves with `tanh`
+- Sampler runs on a background thread; the callback only reads the latest state under the synth's lock
+- `import sounddevice` in `audio.py` is at module level, so **tests also need PortAudio** (macOS/Windows only — why CI uses `macos-latest`)
+- Drum one-shots carry tails across buffers: mix carried voices before queueing new hits
+- Usage smoothing: `DroneSynth` eases `_usage` toward `_target_usage` each buffer (`--smooth` ms, default 500, `0` = passthrough); the first sample snaps (no artificial attack). With `scale` passed in, the pitch target derives from the *smoothed* usage; the `set_usage` hz argument is only a fallback when `scale` is `None`. The status line shows `synth.current_usage` (what is heard), not `sampler.usage`
+
+## GPU sampling
+
+- `powermetrics` must run as root; without sudo it prints `powermetrics must be invoked as the superuser`. Surface a clear `sudo uv run gpu-song` message on failure
+- Parse `GPU HW active residency: X.XX%` first; fall back to `100 - GPU idle residency`
 
 ## Conventions
 
 - Prefer editing within `gpu_song/`; keep the package small and focused
-- After meaningful sessions, append a short entry under [Session learnings](#session-learnings)
+- Commands: `make sync` (deps, default goal), `make test` (pytest + coverage gate `--cov-fail-under=75`); dev deps live in `[dependency-groups] dev`
+- Unit tests never touch real `powermetrics` or audio devices — mock `subprocess.run`, `GPUSampler`, and `DroneSynth` at the CLI boundary; drive callback math via `synth._callback(out, frames, None, None)` with a fake buffer
 - Do not edit plan files the user attaches unless asked
 - Do not commit unless the user asks
-- Run tests with `uv run pytest` (dev group: `uv sync --group dev`)
+- After meaningful sessions, update the relevant sections above so this file stays current
 
-## Session learnings
+## Tooling & CI
 
-### 2026-07-26 — v1 drone + packaging cleanup
+- `Makefile`: `sync` (`uv sync --group dev`) and `test` (`uv run pytest`, depends on `sync`)
+- `.github/workflows/ci.yml`: `make sync` + `make test` on pushes to `main` and on PRs, on `macos-latest`
 
-- Target machine is Apple M2 Pro (arm64). There is no `nvidia-smi`; GPU usage comes from `powermetrics --samplers gpu_power`.
-- `powermetrics` must run as root. Without sudo it prints `powermetrics must be invoked as the superuser`. Surface a clear `sudo uv run gpu-song` message on failure.
-- Parse `GPU HW active residency: X.XX%` first; fall back to `100 - GPU idle residency`.
-- Sound design: continuous sine drone, **A minor pentatonic** (~A2–A4), portamento glide (~120 ms), volume soft-linked to usage with a floor.
-- Audio callback must stay vectorized (`numpy`) — a per-sample Python loop underruns easily with `sounddevice`.
-- Sampler runs on a background thread; the audio callback only reads the latest usage under a lock.
-- Console entry is `gpu_song.cli:entry` (raises `SystemExit`) so exit codes work. Top-level `main.py` was removed on purpose — do not reintroduce it.
-- `CLAUDE.md` → `AGENTS.md` symlink; put durable notes here, not only in chat.
+## Releases
 
-### 2026-07-26 — track presets + dropdown (`feat/audio-tracks`)
-
-- Branch for richer audio: `feat/audio-tracks`.
-- Track timbres live in `gpu_song/tracks.py`; renderers in `audio.py` (`hum`, `warm`, `buzz`, `pulse`, `glass`). Keep callbacks vectorized; soft-clip additive waves with `tanh`.
-- Interactive track picker uses `questionary.select` (terminal dropdown). Skip it when `--track` is set or stdin is not a TTY (default `hum`).
-- Console entry remains `gpu_song.cli:entry`; no top-level `main.py`.
-
-### 2026-07-26 — procedural drums
-
-- Drums live in `gpu_song/drums.py` (`DrumMachine`): synthesized kick/snare/hat, 16-step patterns, BPM ~72–148 from GPU usage, denser kicks/hats when busy.
-- Mixed under the drone inside `DroneSynth` callback; carry one-shot tails across buffers carefully (mix carried voices before queueing new hits).
-- CLI: `--drums` / `--no-drums` (`BooleanOptionalAction`), `--drum-level`, plus a confirm prompt when unset on a TTY.
-- Status line shows current drum BPM when drums are on.
-
-### 2026-07-26 — pytest suite
-
-- Dev dep group: `pytest` via `[dependency-groups] dev` in `pyproject.toml`.
-- Tests live in `tests/`: `test_gpu.py` (powermetrics parse + mocked `sample_once`), `test_audio.py` (notes/scale/renderers), `test_drums.py`, `test_tracks.py`, `test_cli.py` (flags + mocked main loop).
-- Avoid real `powermetrics` / audio devices in unit tests — mock `subprocess.run`, `GPUSampler`, and `DroneSynth` at the CLI boundary.
-
-### 2026-08-15 — smooth usage transitions (`feat/smooth-transitions`)
-
-- Raw `powermetrics` samples jump discretely; `DroneSynth` previously used them immediately, so volume and drum BPM snapped and pitch targets jumped scale steps.
-- Fix: `DroneSynth` keeps `_target_usage` (raw, from `set_usage`) and eases `_usage` toward it each audio buffer (exponential approach, `smooth_ms`, default 500, `0` = passthrough). First `set_usage` snaps so there is no artificial attack ramp.
-- When `scale` (the mapper's freqs) is passed to `DroneSynth`, the pitch target is derived from the *smoothed* usage inside the callback; the `set_usage` hz argument is only a fallback when `scale` is `None`.
-- Drums receive the smoothed usage, so BPM ramps smoothly (on top of their own per-buffer easing).
-- CLI: `--smooth MS`; the status line shows `synth.current_usage` (what is heard), not `sampler.usage` (raw).
-- Callback math is testable by driving `synth._callback(out, frames, None, None)` with a fake buffer — no audio device needed.
-
-### 2026-08-15 — Makefile
-
-- `Makefile` targets: `sync` (`uv sync --group dev`, the default goal; uv creates `.venv` as needed) and `test` (`uv run pytest`, depends on `sync`).
-- CI: `.github/workflows/ci.yml` runs `make sync` + `make test` on pushes to `main` and on PRs, on `macos-latest` — `import sounddevice` in `audio.py` needs PortAudio, which the mac runner ships but ubuntu runners do not.
+- Bump `version` in `pyproject.toml` and the tag together: `vX.Y.Z` — minor for features, patch for fixes — tagging the current `main`
+- Create with `gh release create vX.Y.Z --title "gpu-song vX.Y.Z" --notes-file <notes>`; write notes by hand (features, requirements, install & run) rather than `--generate-notes`
+- Latest: `v0.1.0` (2026-08-15) — drone, 5 tracks, procedural drums, `--smooth` transitions, CI
