@@ -148,7 +148,7 @@ _RENDERERS = {
 
 @dataclass
 class DroneSynth:
-    """Streaming drone with portamento, usage-linked volume, and track timbres."""
+    """Streaming drone with portamento, usage smoothing, and track timbres."""
 
     sample_rate: int = 44100
     volume: float = 0.25
@@ -158,13 +158,18 @@ class DroneSynth:
     track: str = DEFAULT_TRACK
     drums: bool = True
     drum_level: float = 0.55
+    smooth_ms: float = 500.0
+    scale: list[float] | None = None
 
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _target_hz: float = field(default=110.0, init=False)
     _current_hz: float = field(default=110.0, init=False)
     _usage: float = field(default=0.0, init=False)
+    _target_usage: float = field(default=0.0, init=False)
     _phase: float = field(default=0.0, init=False)
     _sample_index: int = field(default=0, init=False)
+    _scale: np.ndarray | None = field(default=None, init=False)
+    _primed: bool = field(default=False, init=False)
     _track_id: str = field(init=False)
     _drums: DrumMachine = field(init=False)
     _stream: sd.OutputStream | None = field(default=None, init=False)
@@ -175,6 +180,9 @@ class DroneSynth:
             sample_rate=self.sample_rate,
             enabled=self.drums,
             level=self.drum_level,
+        )
+        self._scale = (
+            np.asarray(self.scale, dtype=np.float64) if self.scale else None
         )
 
     def set_track(self, track_id: str) -> None:
@@ -203,13 +211,23 @@ class DroneSynth:
 
     def set_usage(self, usage_pct: float, target_hz: float) -> None:
         with self._lock:
-            self._usage = max(0.0, min(100.0, usage_pct))
+            usage = max(0.0, min(100.0, usage_pct))
+            if not self._primed:
+                # Adopt the first real sample without an artificial ramp.
+                self._usage = usage
+                self._primed = True
+            self._target_usage = usage
             self._target_hz = max(20.0, target_hz)
 
     @property
     def current_hz(self) -> float:
         with self._lock:
             return self._current_hz
+
+    @property
+    def current_usage(self) -> float:
+        with self._lock:
+            return self._usage
 
     def start(self) -> None:
         if self._stream is not None:
@@ -242,12 +260,33 @@ class DroneSynth:
 
         with self._lock:
             target_hz = self._target_hz
+            target_usage = self._target_usage
             current_hz = self._current_hz
             usage = self._usage
             phase = self._phase
             sample_index = self._sample_index
             track_id = self._track_id
             drums = self._drums
+            scale = self._scale
+
+        # Ease the usage signal toward the latest sample so pitch, volume,
+        # and drums all ramp up *and* down instead of stepping.
+        if self.smooth_ms > 0.0:
+            tau_usage = max(1e-3, self.smooth_ms / 1000.0)
+            alpha_usage = 1.0 - math.exp(-(frames / self.sample_rate) / tau_usage)
+            usage += (target_usage - usage) * alpha_usage
+        else:
+            usage = target_usage
+
+        # With a scale, the pitch target follows the *smoothed* usage so
+        # big jumps walk the scale gradually.
+        if scale is not None and scale.size:
+            idx = int(
+                np.clip(
+                    np.rint(usage / 100.0 * (scale.size - 1)), 0, scale.size - 1
+                )
+            )
+            target_hz = float(scale[idx])
 
         # Exponential approach toward target frequency each sample.
         # alpha ≈ 1 - exp(-dt / tau); tau = glide_ms.
@@ -275,6 +314,7 @@ class DroneSynth:
         outdata[:, 0] = mixed
 
         with self._lock:
+            self._usage = usage
             self._current_hz = float(hz[-1])
             self._phase = float(phases[-1] % (2.0 * math.pi))
             self._sample_index = sample_index + frames

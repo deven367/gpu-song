@@ -81,3 +81,67 @@ def test_drone_synth_track_and_drums_flags() -> None:
 def test_drone_synth_rejects_unknown_track() -> None:
     with pytest.raises(ValueError, match="Unknown track"):
         DroneSynth(track="nope")
+
+
+def _run_buffers(synth: DroneSynth, count: int = 1) -> None:
+    out = np.zeros((1024, 1), dtype=np.float32)
+    for _ in range(count):
+        synth._callback(out, 1024, None, None)
+
+
+def test_smoothed_usage_ramps_gradually_up() -> None:
+    mapper = UsageMapper(root_midi=45, octaves=2.0)
+    synth = DroneSynth(
+        sample_rate=44100, smooth_ms=500.0, scale=mapper.freqs, drums=False
+    )
+    synth.set_usage(5.0, mapper.target_hz(5.0))  # first sample primes the smoother
+    _run_buffers(synth)
+    synth.set_usage(95.0, mapper.target_hz(95.0))
+    prev = synth.current_usage
+    for _ in range(20):
+        _run_buffers(synth)
+        assert synth.current_usage > prev
+        prev = synth.current_usage
+    assert synth.current_usage < 95.0  # still ramping
+    _run_buffers(synth, 80)
+    assert synth.current_usage == pytest.approx(95.0, abs=1.5)
+
+
+def test_smoothed_usage_ramps_gradually_down() -> None:
+    mapper = UsageMapper(root_midi=45, octaves=2.0)
+    synth = DroneSynth(
+        sample_rate=44100, smooth_ms=500.0, scale=mapper.freqs, drums=False
+    )
+    synth.set_usage(95.0, mapper.target_hz(95.0))
+    _run_buffers(synth)
+    synth.set_usage(4.0, mapper.target_hz(4.0))
+    _run_buffers(synth, 20)
+    assert 4.0 < synth.current_usage < 90.0  # descending, not stepped
+    _run_buffers(synth, 120)
+    assert synth.current_usage == pytest.approx(4.0, abs=1.5)
+
+
+def test_zero_smoothing_is_passthrough() -> None:
+    mapper = UsageMapper(root_midi=45, octaves=2.0)
+    synth = DroneSynth(
+        sample_rate=44100, smooth_ms=0.0, scale=mapper.freqs, drums=False
+    )
+    synth.set_usage(5.0, mapper.target_hz(5.0))
+    synth.set_usage(95.0, mapper.target_hz(95.0))
+    _run_buffers(synth)
+    assert synth.current_usage == pytest.approx(95.0)
+
+
+def test_scale_pitch_follows_smoothed_usage() -> None:
+    mapper = UsageMapper(root_midi=45, octaves=2.0)
+    freqs = mapper.freqs
+    synth = DroneSynth(
+        sample_rate=44100, smooth_ms=500.0, scale=freqs, drums=False
+    )
+    synth.set_usage(2.0, mapper.target_hz(2.0))
+    _run_buffers(synth)
+    synth.set_usage(98.0, mapper.target_hz(98.0))
+    _run_buffers(synth, 3)
+    assert synth.current_hz < (freqs[0] + freqs[-1]) / 2.0
+    _run_buffers(synth, 200)
+    assert synth.current_hz == pytest.approx(freqs[-1], rel=0.02)

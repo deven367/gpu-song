@@ -52,3 +52,12 @@ Python CLI that hums a continuous musical drone pitched from Apple Silicon GPU u
 - Dev dep group: `pytest` via `[dependency-groups] dev` in `pyproject.toml`.
 - Tests live in `tests/`: `test_gpu.py` (powermetrics parse + mocked `sample_once`), `test_audio.py` (notes/scale/renderers), `test_drums.py`, `test_tracks.py`, `test_cli.py` (flags + mocked main loop).
 - Avoid real `powermetrics` / audio devices in unit tests — mock `subprocess.run`, `GPUSampler`, and `DroneSynth` at the CLI boundary.
+
+### 2026-08-15 — smooth usage transitions (`feat/smooth-transitions`)
+
+- Raw `powermetrics` samples jump discretely; `DroneSynth` previously used them immediately, so volume and drum BPM snapped and pitch targets jumped scale steps.
+- Fix: `DroneSynth` keeps `_target_usage` (raw, from `set_usage`) and eases `_usage` toward it each audio buffer (exponential approach, `smooth_ms`, default 500, `0` = passthrough). First `set_usage` snaps so there is no artificial attack ramp.
+- When `scale` (the mapper's freqs) is passed to `DroneSynth`, the pitch target is derived from the *smoothed* usage inside the callback; the `set_usage` hz argument is only a fallback when `scale` is `None`.
+- Drums receive the smoothed usage, so BPM ramps smoothly (on top of their own per-buffer easing).
+- CLI: `--smooth MS`; the status line shows `synth.current_usage` (what is heard), not `sampler.usage` (raw).
+- Callback math is testable by driving `synth._callback(out, frames, None, None)` with a fake buffer — no audio device needed.

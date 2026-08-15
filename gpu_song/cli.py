@@ -74,6 +74,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="portamento time constant in milliseconds (default: 120)",
     )
     parser.add_argument(
+        "--smooth",
+        type=float,
+        default=500.0,
+        metavar="MS",
+        help=(
+            "usage smoothing time constant in milliseconds; "
+            "0 disables smoothing (default: 500)"
+        ),
+    )
+    parser.add_argument(
         "--track",
         type=str,
         default=None,
@@ -165,6 +175,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.octaves <= 0:
         print("error: --octaves must be > 0", file=sys.stderr)
         return 2
+    if args.smooth < 0:
+        print("error: --smooth must be >= 0 ms", file=sys.stderr)
+        return 2
 
     try:
         root_midi = parse_note(args.root)
@@ -183,6 +196,8 @@ def main(argv: list[str] | None = None) -> int:
     synth = DroneSynth(
         volume=args.volume,
         glide_ms=args.glide,
+        smooth_ms=args.smooth,
+        scale=mapper.freqs,
         track=track_id,
         drums=drums_on,
         drum_level=args.drum_level,
@@ -207,18 +222,20 @@ def main(argv: list[str] | None = None) -> int:
     print("Humming — Ctrl+C to stop.")
     try:
         while True:
-            usage = sampler.usage
+            raw_usage = sampler.usage
             err = sampler.error
-            _, note, hz = mapper.describe(usage)
-            synth.set_usage(usage, hz)
+            # Feed in the raw sample; the status line shows what is heard.
+            synth.set_usage(raw_usage, mapper.target_hz(raw_usage))
+            heard = synth.current_usage
+            _, note, hz = mapper.describe(heard)
             if drums_on:
                 status = (
-                    f"\r[{preset.id}] GPU {usage:5.1f}% → {note} "
+                    f"\r[{preset.id}] GPU {heard:5.1f}% → {note} "
                     f"({hz:6.1f} Hz)  drums {synth.drum_bpm:5.1f} BPM"
                 )
             else:
                 status = (
-                    f"\r[{preset.id}] GPU {usage:5.1f}% → {note} ({hz:6.1f} Hz)"
+                    f"\r[{preset.id}] GPU {heard:5.1f}% → {note} ({hz:6.1f} Hz)"
                 )
             if err:
                 status += f"  [{err}]"

@@ -46,6 +46,7 @@ sudo uv run python -m gpu_song
 | `--octaves N` | `2.0` | Scale span in octaves |
 | `--volume V` | `0.25` | Peak volume `0–1` |
 | `--glide MS` | `120` | Portamento time constant |
+| `--smooth MS` | `500` | Usage smoothing time constant; `0` disables |
 | `--track NAME` | *(dropdown)* | Timbre: `hum`, `warm`, `buzz`, `pulse`, `glass` |
 | `--drums` / `--no-drums` | *(ask / on)* | Procedural kick/snare/hats under the drone |
 | `--drum-level V` | `0.55` | Drum mix level `0–1` |
@@ -71,6 +72,8 @@ Ctrl+C stops cleanly.
 ## How it works
 
 1. Background thread samples GPU HW active residency via `powermetrics`
-2. Usage percent maps onto a minor pentatonic spanning `--octaves` from `--root`
+2. The usage signal is exponentially eased (`--smooth`), then mapped onto a
+   minor pentatonic spanning `--octaves` from `--root`, so jumps in GPU load
+   glide through the scale up *and* down
 3. A streaming drone glides toward that pitch; timbre comes from the selected track (`hum` / `warm` / `buzz` / `pulse` / `glass`)
 4. Optional procedural drums (kick / snare / hats) ride underneath — BPM and pattern density rise with GPU load
