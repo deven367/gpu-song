@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # macOS: this is an Apple Silicon tool, and `import sounddevice`
+    # (gpu_song/audio.py) needs PortAudio, which ships on the mac runner.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: make sync
+
+      - name: Run tests
+        run: make test

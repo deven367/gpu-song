@@ -61,3 +61,8 @@ Python CLI that hums a continuous musical drone pitched from Apple Silicon GPU u
 - Drums receive the smoothed usage, so BPM ramps smoothly (on top of their own per-buffer easing).
 - CLI: `--smooth MS`; the status line shows `synth.current_usage` (what is heard), not `sampler.usage` (raw).
 - Callback math is testable by driving `synth._callback(out, frames, None, None)` with a fake buffer — no audio device needed.
+
+### 2026-08-15 — Makefile
+
+- `Makefile` targets: `sync` (`uv sync --group dev`, the default goal; uv creates `.venv` as needed) and `test` (`uv run pytest`, depends on `sync`).
+- CI: `.github/workflows/ci.yml` runs `make sync` + `make test` on pushes to `main` and on PRs, on `macos-latest` — `import sounddevice` in `audio.py` needs PortAudio, which the mac runner ships but ubuntu runners do not.
