@@ -41,15 +41,18 @@ sudo uv run python -m gpu_song
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--interval MS` | `500` | Sample interval for powermetrics |
+| `--interval MS` | `500` | Sample interval for powermetrics; at least `100` ms |
 | `--root NOTE` | `A2` | Root of the minor pentatonic (e.g. `C3`) |
-| `--octaves N` | `2.0` | Scale span in octaves |
-| `--volume V` | `0.25` | Peak volume `0–1` |
-| `--glide MS` | `120` | Portamento time constant |
-| `--smooth MS` | `500` | Usage smoothing time constant; `0` disables |
+| `--octaves N` | `2.0` | Positive scale span in octaves |
+| `--volume V` | `0.25` | Peak volume in `(0, 1]` |
+| `--glide MS` | `120` | Nonnegative portamento time constant |
+| `--smooth MS` | `500` | Nonnegative usage smoothing time constant; `0` disables |
 | `--track NAME` | *(dropdown)* | Timbre: `hum`, `warm`, `buzz`, `pulse`, `glass` |
 | `--drums` / `--no-drums` | *(ask / on)* | Procedural kick/snare/hats under the drone |
 | `--drum-level V` | `0.55` | Drum mix level `0–1` |
+
+Numeric options must be finite. Invalid values exit with code `2` before GPU
+sampling or audio startup.
 
 If `--track` is omitted and stdin is a TTY, an interactive dropdown asks which
 timbre to use. A confirm prompt asks about drums unless `--drums` /
@@ -67,7 +70,9 @@ Status line while running:
 GPU  42.3% → E4 (329.6 Hz)
 ```
 
-Ctrl+C stops cleanly.
+Ctrl+C stops cleanly, including during startup. Shutdown waits for any
+in-flight GPU sample to finish or reach its subprocess timeout. Audio streams
+are closed on startup and shutdown failures.
 
 ## How it works
 
@@ -76,4 +81,5 @@ Ctrl+C stops cleanly.
    minor pentatonic spanning `--octaves` from `--root`, so jumps in GPU load
    glide through the scale up *and* down
 3. A streaming drone glides toward that pitch; timbre comes from the selected track (`hum` / `warm` / `buzz` / `pulse` / `glass`)
-4. Optional procedural drums (kick / snare / hats) ride underneath — BPM and pattern density rise with GPU load
+   — `warm` keeps two independent oscillator phases continuous across buffers
+4. Optional procedural drums (kick / snare / hats) ride underneath — BPM and pattern density rise with GPU load; hits are scheduled at sixteenth-note boundaries

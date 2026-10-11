@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from tempfile import TemporaryFile
+from unittest.mock import MagicMock, patch
+
 import numpy as np
 import pytest
 
@@ -63,7 +66,9 @@ def test_usage_mapper_clamps() -> None:
 def test_renderers_finite(track_id: str) -> None:
     phases = np.linspace(0, 4 * np.pi, 256)
     t = np.linspace(0, 0.01, 256)
-    wave = _RENDERERS[track_id](phases, t)
+    wave = _RENDERERS[track_id](
+        phases, phases * 1.004 if track_id == "warm" else t
+    )
     assert wave.shape == phases.shape
     assert np.isfinite(wave).all()
 
@@ -145,3 +150,65 @@ def test_scale_pitch_follows_smoothed_usage() -> None:
     assert synth.current_hz < (freqs[0] + freqs[-1]) / 2.0
     _run_buffers(synth, 200)
     assert synth.current_hz == pytest.approx(freqs[-1], rel=0.02)
+
+
+def test_warm_oscillators_remain_continuous_across_buffers() -> None:
+    synth = DroneSynth(track="warm", drums=False, smooth_ms=0, volume=1)
+    synth.set_usage(100, 110)
+    chunks = []
+    for _ in range(64):
+        out = np.zeros((1024, 1), dtype=np.float32)
+        synth._callback(out, 1024, None, None)
+        chunks.append(out[:, 0].copy())
+    actual = np.concatenate(chunks)
+    phases = 2 * np.pi * 110 * np.arange(1, actual.size + 1) / synth.sample_rate
+    wave = 0.55 * np.sin(phases) + 0.45 * np.sin(phases * 1.004)
+    expected = np.tanh(np.tanh(wave * 1.2))
+    np.testing.assert_allclose(actual, expected, atol=1e-7)
+
+
+def test_warm_pitch_changes_do_not_depend_on_buffer_partition() -> None:
+    whole = DroneSynth(track="warm", drums=False, smooth_ms=0)
+    split = DroneSynth(track="warm", drums=False, smooth_ms=0)
+    for hz in (110, 330):
+        whole.set_usage(100, hz)
+        split.set_usage(100, hz)
+        expected = np.zeros((16384, 1), dtype=np.float32)
+        whole._callback(expected, 16384, None, None)
+        chunks = []
+        for _ in range(16):
+            out = np.zeros((1024, 1), dtype=np.float32)
+            split._callback(out, 1024, None, None)
+            chunks.append(out.copy())
+        np.testing.assert_allclose(np.concatenate(chunks), expected, atol=1e-7)
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("start failed"), KeyboardInterrupt()])
+def test_start_failure_closes_stream_and_can_restart(failure: BaseException) -> None:
+    synth = DroneSynth(drums=False)
+    with TemporaryFile() as failed_resource, TemporaryFile() as resource:
+        failed = MagicMock()
+        failed.start.side_effect = failure
+        failed.close.side_effect = failed_resource.close
+        stream = MagicMock()
+        stream.close.side_effect = resource.close
+        with patch("gpu_song.audio.sd.OutputStream", side_effect=[failed, stream]):
+            with pytest.raises(type(failure)):
+                synth.start()
+            assert failed_resource.closed
+            synth.start()
+            synth.stop()
+            assert resource.closed
+
+
+def test_stop_failure_still_closes_stream() -> None:
+    synth = DroneSynth(drums=False)
+    with TemporaryFile() as resource:
+        stream = MagicMock()
+        stream.stop.side_effect = RuntimeError("stop failed")
+        stream.close.side_effect = resource.close
+        with patch("gpu_song.audio.sd.OutputStream", return_value=stream):
+            synth.start()
+            with pytest.raises(RuntimeError):
+                synth.stop()
+        assert resource.closed
