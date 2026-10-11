@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 import subprocess
 import threading
-import time
 from dataclasses import dataclass, field
 
 _ACTIVE_RE = re.compile(r"GPU HW active residency:\s*([\d.]+)%")
@@ -110,6 +109,7 @@ class GPUSampler:
         with self._lock:
             self._usage = usage
             self._error = None
+        self._stop.clear()
         self._thread = threading.Thread(
             target=self._run, name="gpu-sampler", daemon=True
         )
@@ -118,7 +118,7 @@ class GPUSampler:
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            self._thread.join()
             self._thread = None
 
     def _run(self) -> None:
@@ -138,4 +138,4 @@ class GPUSampler:
                     self._error = f"Unexpected sampler error: {exc}"
                 self._stop.wait(1.0)
             # sample_once already blocks for ~interval_ms; tiny yield only.
-            time.sleep(0.01)
+            self._stop.wait(0.01)

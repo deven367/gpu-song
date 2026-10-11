@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from gpu_song.drums import DrumMachine
 
@@ -46,3 +47,47 @@ def test_stream_stays_active() -> None:
     combined = np.concatenate(chunks)
     assert float(np.abs(combined).max()) > 0.01
     assert float(np.mean(np.abs(combined) > 1e-4)) > 0.1
+
+
+@pytest.mark.parametrize(
+    ("sample_rate", "chunks", "first_pos"),
+    [
+        (150, [25, 1, 24, 350, 37], 0.0),
+        (153, [26, 1, 24, 357, 31], 0.5),
+    ],
+)
+def test_step_boundaries_match_across_buffer_splits(
+    sample_rate: int, chunks: list[int], first_pos: float
+) -> None:
+    single = DrumMachine(sample_rate=sample_rate, bpm_min=90.0, bpm_max=90.0)
+    split = DrumMachine(sample_rate=sample_rate, bpm_min=90.0, bpm_max=90.0)
+    parts = []
+    for index, frames in enumerate(chunks):
+        part = split.render(frames, 100.0)
+        if index == 0:
+            assert split._pos_in_step == first_pos
+            assert split._pending_trigger
+            assert split._step == 1
+        parts.append(part)
+    np.testing.assert_allclose(
+        np.concatenate(parts), single.render(sum(chunks), 100.0),
+        rtol=0.0, atol=1e-14,
+    )
+    assert split._step == single._step == 1
+    assert split._pending_trigger == single._pending_trigger
+    assert split._pos_in_step == pytest.approx(single._pos_in_step)
+
+
+def test_tempo_shortening_advances_before_triggering_overdue_step() -> None:
+    drums = DrumMachine(sample_rate=150, bpm_max=900.0)
+    drums._step = 15
+    drums._pos_in_step = 24.75
+    drums._pending_trigger = False
+    np.testing.assert_array_equal(drums.render(1, 100.0), [0.0])
+    assert drums._step == 0
+    assert drums._pending_trigger
+    actual = drums.render(2, 0.0)
+    expected = (drums._kick[:2] + drums._hat[:2] * 0.7) * drums.level
+    np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1e-14)
+    assert drums._step == 0
+    assert not drums._pending_trigger

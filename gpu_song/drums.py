@@ -96,11 +96,16 @@ class DrumMachine:
         pos = self._pos_in_step
         step = self._step
         pending = self._pending_trigger
-        for i in range(frames):
+        offset = 0
+        while offset < frames:
             if pending:
-                triggers.append((i, step))
+                triggers.append((offset, step))
                 pending = False
-            pos += 1.0
+            # Even when a tempo change puts pos past the boundary, the
+            # original scheduler advances at least one sample per step.
+            advance = min(frames - offset, max(1, math.ceil(samples_per_step - pos)))
+            pos += advance
+            offset += advance
             if pos >= samples_per_step:
                 pos -= samples_per_step
                 step = (step + 1) % 16

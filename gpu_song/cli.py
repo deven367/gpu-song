@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 
@@ -172,11 +173,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.interval < 100:
         print("error: --interval must be >= 100 ms", file=sys.stderr)
         return 2
-    if args.octaves <= 0:
-        print("error: --octaves must be > 0", file=sys.stderr)
+    if not math.isfinite(args.octaves) or args.octaves <= 0:
+        print("error: --octaves must be finite and > 0", file=sys.stderr)
         return 2
-    if args.smooth < 0:
-        print("error: --smooth must be >= 0 ms", file=sys.stderr)
+    if not math.isfinite(args.glide) or args.glide < 0:
+        print("error: --glide must be finite and >= 0 ms", file=sys.stderr)
+        return 2
+    if not math.isfinite(args.smooth) or args.smooth < 0:
+        print("error: --smooth must be finite and >= 0 ms", file=sys.stderr)
         return 2
 
     try:
@@ -191,7 +195,11 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
     preset = TRACK_BY_ID[track_id]
-    mapper = UsageMapper(root_midi=root_midi, octaves=args.octaves)
+    try:
+        mapper = UsageMapper(root_midi=root_midi, octaves=args.octaves)
+    except (OverflowError, ValueError):
+        print("error: --octaves exceeds the supported frequency range", file=sys.stderr)
+        return 2
     sampler = GPUSampler(interval_ms=args.interval)
     synth = DroneSynth(
         volume=args.volume,
@@ -206,21 +214,22 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Track: {preset.label} ({preset.id})")
     print(f"Drums: {'on' if drums_on else 'off'}")
     print("gpu-song: sampling Apple Silicon GPU via powermetrics…")
+    running = False
     try:
-        sampler.start()
-    except GPUSampleError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        try:
+            sampler.start()
+        except GPUSampleError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
-    try:
-        synth.start()
-    except Exception as exc:  # noqa: BLE001
-        sampler.stop()
-        print(f"error: could not open audio device: {exc}", file=sys.stderr)
-        return 1
+        try:
+            synth.start()
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: could not open audio device: {exc}", file=sys.stderr)
+            return 1
 
-    print("Humming — Ctrl+C to stop.")
-    try:
+        running = True
+        print("Humming — Ctrl+C to stop.")
         while True:
             raw_usage = sampler.usage
             err = sampler.error
@@ -242,10 +251,15 @@ def main(argv: list[str] | None = None) -> int:
             print(status, end="", flush=True)
             time.sleep(0.1)
     except KeyboardInterrupt:
+        if not running:
+            print("\nCancelled.", file=sys.stderr)
+            return 130
         print("\nStopping…")
     finally:
-        synth.stop()
-        sampler.stop()
+        try:
+            synth.stop()
+        finally:
+            sampler.stop()
 
     return 0
 

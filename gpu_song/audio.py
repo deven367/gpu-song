@@ -102,12 +102,8 @@ def _render_hum(phases: np.ndarray, _t: np.ndarray) -> np.ndarray:
     return np.sin(phases)
 
 
-def _render_warm(phases: np.ndarray, _t: np.ndarray) -> np.ndarray:
-    # Second oscillator ~7 cents sharp via phase stretch (approx).
-    detune = 1.004
-    a = np.sin(phases)
-    b = np.sin(phases * detune)
-    return 0.55 * a + 0.45 * b
+def _render_warm(phases: np.ndarray, detuned_phases: np.ndarray) -> np.ndarray:
+    return 0.55 * np.sin(phases) + 0.45 * np.sin(detuned_phases)
 
 
 def _render_buzz(phases: np.ndarray, _t: np.ndarray) -> np.ndarray:
@@ -167,6 +163,7 @@ class DroneSynth:
     _usage: float = field(default=0.0, init=False)
     _target_usage: float = field(default=0.0, init=False)
     _phase: float = field(default=0.0, init=False)
+    _warm_phase: float = field(default=0.0, init=False)
     _sample_index: int = field(default=0, init=False)
     _scale: np.ndarray | None = field(default=None, init=False)
     _primed: bool = field(default=False, init=False)
@@ -232,20 +229,28 @@ class DroneSynth:
     def start(self) -> None:
         if self._stream is not None:
             return
-        self._stream = sd.OutputStream(
+        stream = sd.OutputStream(
             samplerate=self.sample_rate,
             channels=1,
             dtype="float32",
             blocksize=self.blocksize,
             callback=self._callback,
         )
-        self._stream.start()
+        try:
+            stream.start()
+        except BaseException:
+            stream.close()
+            raise
+        self._stream = stream
 
     def stop(self) -> None:
         if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
+            stream = self._stream
             self._stream = None
+            try:
+                stream.stop()
+            finally:
+                stream.close()
 
     def _callback(
         self,
@@ -264,6 +269,7 @@ class DroneSynth:
             current_hz = self._current_hz
             usage = self._usage
             phase = self._phase
+            warm_phase = self._warm_phase
             sample_index = self._sample_index
             track_id = self._track_id
             drums = self._drums
@@ -302,11 +308,14 @@ class DroneSynth:
         steps = np.arange(1, frames + 1, dtype=np.float64)
         hz = target_hz + (current_hz - target_hz) * (decay**steps)
         phase_inc = 2.0 * math.pi * hz / self.sample_rate
-        phases = phase + np.cumsum(phase_inc)
+        phase_steps = np.cumsum(phase_inc)
+        phases = phase + phase_steps
         t = (sample_index + np.arange(frames, dtype=np.float64)) / self.sample_rate
 
-        renderer = _RENDERERS.get(track_id, _render_hum)
-        wave = renderer(phases, t)
+        if track_id == "warm":
+            wave = _render_warm(phases, warm_phase + phase_steps * 1.004)
+        else:
+            wave = _RENDERERS[track_id](phases, t)
         # Gentle soft-clip so additive tracks stay tame.
         drone = np.tanh(wave * 1.2) * amp
         drum = drums.render(frames, usage)
@@ -317,4 +326,7 @@ class DroneSynth:
             self._usage = usage
             self._current_hz = float(hz[-1])
             self._phase = float(phases[-1] % (2.0 * math.pi))
+            self._warm_phase = float(
+                (warm_phase + phase_steps[-1] * 1.004) % (2.0 * math.pi)
+            )
             self._sample_index = sample_index + frames
